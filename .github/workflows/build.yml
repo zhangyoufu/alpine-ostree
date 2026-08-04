@@ -22,19 +22,18 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.platform.github_runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # amd64 on the standard x64 runner, aarch64 natively on an arm64
-          # runner (no QEMU/binfmt emulation -> much faster)
-          - alpine_version: v3.24
-            docker_arch: amd64
-            runner: ubuntu-26.04
-          - alpine_version: v3.24
-            docker_arch: aarch64
-            runner: ubuntu-26.04-arm
+        # amd64 on the standard x64 runner, aarch64 natively on an arm64
+        # runner (no QEMU/binfmt emulation -> much faster)
+        alpine_version: [v3.24]
+        platform:
+          - docker_arch: amd64
+            github_runner: ubuntu-26.04
+          - docker_arch: aarch64
+            github_runner: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v7
 
@@ -54,7 +53,7 @@ jobs:
       - name: Build packages
         env:
           ALPINE_VERSION: ${{ matrix.alpine_version }}
-          DOCKER_ARCH: ${{ matrix.docker_arch }}
+          DOCKER_ARCH: ${{ matrix.platform.docker_arch }}
         run: |-
           set -eu
           case "${DOCKER_ARCH}" in

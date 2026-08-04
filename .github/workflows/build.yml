@@ -71,6 +71,7 @@ jobs:
             "${IMAGE}" /bin/sh -eux <<'EOF'
             # the runner may leak HOME=/home/runner into the container
             export HOME=/root
+            apk update
             apk add --no-cache abuild
 
             ALPINE_ARCH="$(apk --print-arch)"

@@ -74,7 +74,8 @@ build() {
 package() {
 	make DESTDIR="$pkgdir" install
 
-	install -Dm755 "$builddir"/ostree-trivial-httpd \
+	# the libtool wrapper is not usable at runtime; install the real binary
+	install -Dm755 "$builddir"/.libs/ostree-trivial-httpd \
 		-t "$pkgdir"/usr/bin/
 	# the builtin grub generator is only installed by upstream when
 	# --with-builtin-grub2-mkconfig is used; ship it so it can be selected

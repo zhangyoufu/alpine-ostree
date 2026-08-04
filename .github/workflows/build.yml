@@ -135,7 +135,7 @@ jobs:
         env:
           # environment secret on "github-pages" (main branch only)
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          KEY_FILENAME: ${{ github.owner }}.rsa
+          KEY_FILENAME: ${{ github.repository_owner }}.rsa
         run: |-
           set -eu
           if [ -n "${PRIVATE_KEY}" ]; then
@@ -176,8 +176,8 @@ jobs:
 
               mkdir -p /work/_site/keys
               cp /root/.abuild/${KEY_FILENAME}.pub /work/_site/keys/
-            EOF
-            echo "re-signed all packages + indexes"
+          EOF
+          echo "re-signed all packages + indexes"
           else
             echo "::warning::github-pages environment secret PRIVATE_KEY not set; publishing with the build-stage dummy signatures"
           fi

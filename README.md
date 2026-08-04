@@ -36,6 +36,11 @@ apk update
 apk add ostree          # pulls composefs automatically
 ```
 
+The public key is not stored in this repository: the build derives it from the
+`PRIVATE_KEY` repository secret and the Pages workflow publishes it at
+`/keys/zhangyoufu.rsa.pub` (and alongside the packages in each architecture
+directory).
+
 `ostree --version` should list `composefs` under Features.
 
 ## Building locally

@@ -76,6 +76,11 @@ package() {
 
 	install -Dm755 "$builddir"/ostree-trivial-httpd \
 		-t "$pkgdir"/usr/bin/
+	# the builtin grub generator is only installed by upstream when
+	# --with-builtin-grub2-mkconfig is used; ship it so it can be selected
+	# at runtime via OSTREE_GRUB2_EXEC=builtin
+	install -Dm755 "$builddir"/src/boot/grub2/ostree-grub-generator \
+		-t "$pkgdir"/usr/lib/ostree/
 }
 
 dev() {

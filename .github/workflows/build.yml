@@ -140,7 +140,10 @@ jobs:
           mkdir -p _site
           # upload-artifact stores the *contents* of repo/ at the artifact root
           cp -a artifacts/*/. _site/
-          cp -a keys _site/keys
+          # publish the signing key at a stable location; it is generated from
+          # the PRIVATE_KEY secret during the build, not committed to the repo
+          mkdir -p _site/keys
+          cp _site/v3.24/main/*/*.rsa.pub _site/keys/
           # artifact-based Pages serves the files as-is; no .nojekyll needed
           find _site -maxdepth 4 -type f | sort
 

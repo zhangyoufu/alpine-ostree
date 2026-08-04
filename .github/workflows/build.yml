@@ -1,0 +1,148 @@
+# Builds composefs + ostree (composefs-enabled) APKs for Alpine, per branch
+# and architecture, and publishes the resulting apk repository to GitHub Pages.
+#
+# The published repository is consumable as a normal Alpine apk repo:
+#   https://<user>.github.io/<repo>/v3.24/main
+# (apk appends the architecture directory, e.g. .../v3.24/main/x86_64)
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PACKAGER: Youfu Zhang <zhangyoufu@gmail.com>
+  PRIVATE_KEY_FILENAME: zhangyoufu.rsa
+
+jobs:
+  build:
+    if: "!contains(github.event.head_commit.message, '[ci skip]')"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine_version: [v3.24]
+        docker_arch: [amd64, aarch64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up QEMU for cross-arch container
+        if: matrix.docker_arch != 'amd64'
+        uses: docker/setup-qemu-action@v4
+
+      - name: Prepare abuild key
+        env:
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+        run: |
+          set -eux
+          mkdir -p .abuild
+          echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
+          if [ -n "${PRIVATE_KEY}" ]; then
+            printf '%s\n' "${PRIVATE_KEY}" > ".abuild/${PRIVATE_KEY_FILENAME}"
+          else
+            # no secret configured: use a throwaway key (packages still build,
+            # but are signed with a key that is not published)
+            PRIVATE_KEY_FILENAME=dummy.rsa
+            openssl genrsa -out ".abuild/dummy.rsa" 4096
+          fi
+          echo "PACKAGER_PRIVKEY='${HOME}/.abuild/${PRIVATE_KEY_FILENAME}'" >> .abuild/abuild.conf
+          openssl rsa -in ".abuild/${PRIVATE_KEY_FILENAME}" -pubout -out ".abuild/${PRIVATE_KEY_FILENAME}.pub"
+
+      - name: Build packages
+        env:
+          ALPINE_VERSION: ${{ matrix.alpine_version }}
+          DOCKER_ARCH: ${{ matrix.docker_arch }}
+        run: |
+          set -eux
+          case "${DOCKER_ARCH}" in
+            amd64)   IMAGE="alpine:${ALPINE_VERSION#v}" ;;
+            aarch64) IMAGE="arm64v8/alpine:${ALPINE_VERSION#v}" ;;
+            *)       echo "unsupported arch: ${DOCKER_ARCH}" >&2; exit 1 ;;
+          esac
+          docker run --rm --interactive \
+            --volume "$PWD":/work --workdir /work \
+            --env PACKAGER --env PRIVATE_KEY_FILENAME \
+            "${IMAGE}" /bin/sh -eux <<'EOF'
+            apk add --no-cache abuild
+
+            ALPINE_ARCH="$(apk --print-arch)"
+            REPODEST="/work/repo/${ALPINE_VERSION}"
+            echo "building for Alpine ${ALPINE_VERSION} / ${ALPINE_ARCH}"
+
+            mkdir -p /root/.abuild
+            cp /work/.abuild/abuild.conf /root/.abuild/
+            cp /work/.abuild/*.rsa /root/.abuild/ 2>/dev/null || true
+            cp /work/.abuild/*.rsa.pub /root/.abuild/
+            chmod 600 /root/.abuild/*.rsa
+            cp /root/.abuild/*.rsa.pub /etc/apk/keys/
+
+            # composefs (needed by ostree; provides libcomposefs + pkg-config)
+            cd /work/main/composefs
+            abuild -F -r -P "${REPODEST}"
+
+            # index the local repo and expose it so ostree's build can resolve
+            # makedepends from it
+            abuild index
+            echo "file://${REPODEST}" >> /etc/apk/repositories
+            apk update --no-cache
+
+            # ostree with composefs support
+            cd /work/main/ostree
+            abuild -F -r -P "${REPODEST}"
+            abuild index
+
+            # publish the public key alongside the packages
+            for archdir in "${REPODEST}"/main/*/; do
+              cp /root/.abuild/*.rsa.pub "${archdir}/"
+            done
+            find "${REPODEST}" -maxdepth 3 -type f | sort
+          EOF
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: repo-${{ matrix.alpine_version }}-${{ matrix.docker_arch }}
+          path: repo/
+          if-no-files-found: error
+
+  pages:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download all built repos
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Assemble Pages site
+        run: |
+          set -eux
+          mkdir -p _site
+          # each artifact contains repo/v3.24/main/<arch>/
+          cp -a artifacts/*/repo/. _site/
+          cp -a keys _site/keys
+          touch _site/.nojekyll
+          find _site -maxdepth 4 -type f | sort
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

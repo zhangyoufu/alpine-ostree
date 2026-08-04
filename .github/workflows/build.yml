@@ -37,9 +37,10 @@ jobs:
         env:
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
         run: |-
-          set -eux
+          set -eu
           if [ -n "${PRIVATE_KEY}" ]; then
             KEY_FILENAME="${GITHUB_REPOSITORY_OWNER}.rsa"
+            echo "using the PRIVATE_KEY secret as ${KEY_FILENAME}"
           else
             # no secret configured: use a throwaway key (packages still build,
             # but are signed with a key that is not published)
@@ -83,17 +84,19 @@ jobs:
           PRIVATE_KEY:  ${{ needs.prepare-key.outputs.private_key }}
           PUBLIC_KEY:   ${{ needs.prepare-key.outputs.public_key }}
         run: |-
-          set -eux
+          set -eu
           mkdir -p .abuild
           echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
           if [ -n "${SECRET_KEY}" ]; then
             # real key: read the secret directly (job outputs would be redacted)
             printf '%s\n' "${SECRET_KEY}" > ".abuild/${KEY_FILENAME}"
             openssl rsa -in ".abuild/${KEY_FILENAME}" -pubout -out ".abuild/${KEY_FILENAME}.pub"
+            echo "using the PRIVATE_KEY secret as ${KEY_FILENAME}"
           else
             # throwaway key shared by prepare-key via job outputs
             printf '%s\n' "${PRIVATE_KEY}" > ".abuild/${KEY_FILENAME}"
             printf '%s\n' "${PUBLIC_KEY}" > ".abuild/${KEY_FILENAME}.pub"
+            echo "using the throwaway key ${KEY_FILENAME}"
           fi
           echo "PACKAGER_PRIVKEY='/root/.abuild/${KEY_FILENAME}'" >> .abuild/abuild.conf
           chmod 600 ".abuild/${KEY_FILENAME}"
@@ -105,7 +108,7 @@ jobs:
           DOCKER_ARCH: ${{ matrix.docker_arch }}
           KEY_FILENAME: ${{ needs.prepare-key.outputs.key_filename }}
         run: |-
-          set -eux
+          set -eu
           case "${DOCKER_ARCH}" in
             amd64)   PLATFORM="linux/amd64" ;;
             aarch64) PLATFORM="linux/arm64" ;;
@@ -116,7 +119,7 @@ jobs:
             --platform "${PLATFORM}" \
             --volume "$PWD":/work --workdir /work \
             --env PACKAGER --env KEY_FILENAME --env ALPINE_VERSION \
-            alpine:${ALPINE_VERSION#v} /bin/sh -eux <<'EOF'
+            alpine:${ALPINE_VERSION#v} /bin/sh -eu <<'EOF'
             # the runner may leak HOME=/home/runner into the container
             export HOME=/root
             apk update
@@ -176,7 +179,7 @@ jobs:
           KEY_FILENAME: ${{ needs.prepare-key.outputs.key_filename }}
           PUBLIC_KEY:   ${{ needs.prepare-key.outputs.public_key }}
         run: |-
-          set -eux
+          set -eu
           mkdir -p _site
           # upload-artifact stores the *contents* of repo/ at the artifact root
           cp -a artifacts/*/. _site/
@@ -188,8 +191,10 @@ jobs:
             printf '%s\n' "${SECRET_KEY}" > /tmp/.key.rsa
             openssl rsa -in /tmp/.key.rsa -pubout -out "_site/keys/${KEY_FILENAME}.pub"
             rm -f /tmp/.key.rsa
+            echo "published signing key: keys/${KEY_FILENAME}.pub"
           else
             printf '%s\n' "${PUBLIC_KEY}" > "_site/keys/${KEY_FILENAME}.pub"
+            echo "published throwaway signing key: keys/${KEY_FILENAME}.pub"
           fi
           # artifact-based Pages serves the files as-is; no .nojekyll needed
           find _site -maxdepth 4 -type f | sort

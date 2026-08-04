@@ -40,7 +40,7 @@ jobs:
       - name: Prepare abuild key
         env:
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-        run: |
+        run: |-
           set -eux
           mkdir -p .abuild
           echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
@@ -60,18 +60,19 @@ jobs:
         env:
           ALPINE_VERSION: ${{ matrix.alpine_version }}
           DOCKER_ARCH: ${{ matrix.docker_arch }}
-        run: |
+        run: |-
           set -eux
           case "${DOCKER_ARCH}" in
-            amd64)   IMAGE="alpine:${ALPINE_VERSION#v}"; PLATFORM="linux/amd64" ;;
-            aarch64) IMAGE="arm64v8/alpine:${ALPINE_VERSION#v}"; PLATFORM="linux/arm64" ;;
+            amd64)   PLATFORM="linux/amd64" ;;
+            aarch64) PLATFORM="linux/arm64" ;;
             *)       echo "unsupported arch: ${DOCKER_ARCH}" >&2; exit 1 ;;
           esac
+          # library/alpine is multi-platform; docker resolves the variant via --platform
           docker run --rm --interactive \
             --platform "${PLATFORM}" \
             --volume "$PWD":/work --workdir /work \
             --env PACKAGER --env PRIVATE_KEY_FILENAME --env ALPINE_VERSION \
-            "${IMAGE}" /bin/sh -eux <<'EOF'
+            alpine:${ALPINE_VERSION#v} /bin/sh -eux <<'EOF'
             # the runner may leak HOME=/home/runner into the container
             export HOME=/root
             apk update
@@ -117,7 +118,7 @@ jobs:
 
   pages:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     needs: build
     permissions:
       pages: write
@@ -134,7 +135,7 @@ jobs:
           path: artifacts
 
       - name: Assemble Pages site
-        run: |
+        run: |-
           set -eux
           mkdir -p _site
           # upload-artifact stores the *contents* of repo/ at the artifact root

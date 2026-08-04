@@ -89,16 +89,14 @@ jobs:
             cd /work/main/composefs
             abuild -F -r -P "${REPODEST}"
 
-            # index the local repo and expose it so ostree's build can resolve
-            # makedepends from it
-            abuild index
+            # the build above already indexes + signs the repo; expose it so
+            # ostree's build can resolve makedepends from it
             echo "file://${REPODEST}" >> /etc/apk/repositories
             apk update --no-cache
 
             # ostree with composefs support
             cd /work/main/ostree
             abuild -F -r -P "${REPODEST}"
-            abuild index
 
             # publish the public key alongside the packages
             for archdir in "${REPODEST}"/main/*/; do

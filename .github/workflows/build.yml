@@ -134,8 +134,8 @@ jobs:
         run: |
           set -eux
           mkdir -p _site
-          # each artifact contains repo/v3.24/main/<arch>/
-          cp -a artifacts/*/repo/. _site/
+          # upload-artifact stores the *contents* of repo/ at the artifact root
+          cp -a artifacts/*/. _site/
           cp -a keys _site/keys
           touch _site/.nojekyll
           find _site -maxdepth 4 -type f | sort

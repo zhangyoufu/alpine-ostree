@@ -20,14 +20,17 @@ env:
 
 jobs:
   # Generate the signing key ONCE so every architecture signs with the same
-  # key. Uses the PRIVATE_KEY secret when configured (key name
-  # <github.owner>.rsa); otherwise a throwaway key named dummy.rsa (with a
-  # loud warning). The key files are shared via an artifact (job outputs
-  # redact secret-derived values, so key material must travel as files).
+  # key. When the PRIVATE_KEY secret is set, the key name is
+  # <github.owner>.rsa and consumers read the secret directly (GitHub redacts
+  # secret-derived values in job outputs, so the key cannot travel that way).
+  # Without the secret, a single throwaway key named dummy.rsa is generated
+  # here and shared via job outputs.
   prepare-key:
     runs-on: ubuntu-latest
     outputs:
       key_filename: ${{ steps.key.outputs.key_filename }}
+      private_key:  ${{ steps.key.outputs.private_key }}
+      public_key:   ${{ steps.key.outputs.public_key }}
     steps:
       - name: Generate signing key
         id: key
@@ -37,28 +40,23 @@ jobs:
           set -eux
           if [ -n "${PRIVATE_KEY}" ]; then
             KEY_FILENAME="${GITHUB_REPOSITORY_OWNER}.rsa"
-            printf '%s\n' "${PRIVATE_KEY}" > "/tmp/${KEY_FILENAME}"
           else
             # no secret configured: use a throwaway key (packages still build,
             # but are signed with a key that is not published)
             KEY_FILENAME=dummy.rsa
             openssl genrsa -out "/tmp/${KEY_FILENAME}" 4096
+            openssl rsa -in "/tmp/${KEY_FILENAME}" -pubout -out "/tmp/${KEY_FILENAME}.pub"
             echo "::warning::No PRIVATE_KEY secret configured; packages are signed with a throwaway key and cannot be trusted. Set the PRIVATE_KEY repository secret to publish a usable repository."
+            {
+              echo "private_key<<PKEOF"
+              cat "/tmp/${KEY_FILENAME}"
+              echo "PKEOF"
+              echo "public_key<<PUBEOF"
+              cat "/tmp/${KEY_FILENAME}.pub"
+              echo "PUBEOF"
+            } >> "$GITHUB_OUTPUT"
           fi
-          openssl rsa -in "/tmp/${KEY_FILENAME}" -pubout -out "/tmp/${KEY_FILENAME}.pub"
           echo "key_filename=${KEY_FILENAME}" >> "$GITHUB_OUTPUT"
-          mkdir -p .abuild
-          echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
-          echo "PACKAGER_PRIVKEY='/root/.abuild/${KEY_FILENAME}'" >> .abuild/abuild.conf
-          install -m600 "/tmp/${KEY_FILENAME}" ".abuild/${KEY_FILENAME}"
-          install -m644 "/tmp/${KEY_FILENAME}.pub" ".abuild/${KEY_FILENAME}.pub"
-          ls -la .abuild
-      - name: Upload signing key
-        uses: actions/upload-artifact@v7
-        with:
-          name: signing-key
-          path: .abuild
-          if-no-files-found: error
 
   build:
     runs-on: ${{ matrix.runner }}
@@ -78,11 +76,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download signing key
-        uses: actions/download-artifact@v8
-        with:
-          name: signing-key
-          path: .
+      - name: Prepare abuild key
+        env:
+          SECRET_KEY:   ${{ secrets.PRIVATE_KEY }}
+          KEY_FILENAME: ${{ needs.prepare-key.outputs.key_filename }}
+          PRIVATE_KEY:  ${{ needs.prepare-key.outputs.private_key }}
+          PUBLIC_KEY:   ${{ needs.prepare-key.outputs.public_key }}
+        run: |-
+          set -eux
+          mkdir -p .abuild
+          echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
+          if [ -n "${SECRET_KEY}" ]; then
+            # real key: read the secret directly (job outputs would be redacted)
+            printf '%s\n' "${SECRET_KEY}" > ".abuild/${KEY_FILENAME}"
+            openssl rsa -in ".abuild/${KEY_FILENAME}" -pubout -out ".abuild/${KEY_FILENAME}.pub"
+          else
+            # throwaway key shared by prepare-key via job outputs
+            printf '%s\n' "${PRIVATE_KEY}" > ".abuild/${KEY_FILENAME}"
+            printf '%s\n' "${PUBLIC_KEY}" > ".abuild/${KEY_FILENAME}.pub"
+          fi
+          echo "PACKAGER_PRIVKEY='/root/.abuild/${KEY_FILENAME}'" >> .abuild/abuild.conf
+          chmod 600 ".abuild/${KEY_FILENAME}"
+          ls -la .abuild
 
       - name: Build packages
         env:
@@ -150,12 +165,6 @@ jobs:
     environment:
       name: github-pages
     steps:
-      - name: Download signing key
-        uses: actions/download-artifact@v8
-        with:
-          name: signing-key
-          path: .
-
       - name: Download all built repos
         uses: actions/download-artifact@v8
         with:
@@ -163,16 +172,25 @@ jobs:
 
       - name: Assemble Pages site
         env:
+          SECRET_KEY:   ${{ secrets.PRIVATE_KEY }}
           KEY_FILENAME: ${{ needs.prepare-key.outputs.key_filename }}
+          PUBLIC_KEY:   ${{ needs.prepare-key.outputs.public_key }}
         run: |-
           set -eux
           mkdir -p _site
           # upload-artifact stores the *contents* of repo/ at the artifact root
           cp -a artifacts/*/. _site/
-          # publish the signing key at a stable location; it comes from the
-          # prepare-key job (single key shared by every architecture)
+          # publish the signing key at a stable location; single key shared by
+          # every architecture (from the secret, or from prepare-key's outputs
+          # in the throwaway case)
           mkdir -p _site/keys
-          cp ".abuild/${KEY_FILENAME}.pub" _site/keys/
+          if [ -n "${SECRET_KEY}" ]; then
+            printf '%s\n' "${SECRET_KEY}" > /tmp/.key.rsa
+            openssl rsa -in /tmp/.key.rsa -pubout -out "_site/keys/${KEY_FILENAME}.pub"
+            rm -f /tmp/.key.rsa
+          else
+            printf '%s\n' "${PUBLIC_KEY}" > "_site/keys/${KEY_FILENAME}.pub"
+          fi
           # artifact-based Pages serves the files as-is; no .nojekyll needed
           find _site -maxdepth 4 -type f | sort
 

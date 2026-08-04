@@ -1,6 +1,11 @@
 # Builds composefs + ostree (composefs-enabled) APKs for Alpine, per branch
 # and architecture, and publishes the resulting apk repository to GitHub Pages.
 #
+# Build stage uses a throwaway key (no secret involvement). Before publishing,
+# every package is RE-SIGNED with the real key, which lives as an environment
+# secret on the "github-pages" environment (only jobs using that environment
+# - i.e. the main-branch publish job - can see it).
+#
 # The published repository is consumable as a normal Alpine apk repo:
 #   https://<user>.github.io/<repo>/v3.24/main
 # (apk appends the architecture directory, e.g. .../v3.24/main/x86_64)
@@ -19,49 +24,8 @@ env:
   PACKAGER: Youfu Zhang <zhangyoufu@gmail.com>
 
 jobs:
-  # Generate the signing key ONCE so every architecture signs with the same
-  # key. When the PRIVATE_KEY secret is set, the key name is
-  # <github.owner>.rsa and consumers read the secret directly (GitHub redacts
-  # secret-derived values in job outputs, so the key cannot travel that way).
-  # Without the secret, a single throwaway key named dummy.rsa is generated
-  # here and shared via job outputs.
-  prepare-key:
-    runs-on: ubuntu-latest
-    outputs:
-      key_filename: ${{ steps.key.outputs.key_filename }}
-      private_key:  ${{ steps.key.outputs.private_key }}
-      public_key:   ${{ steps.key.outputs.public_key }}
-    steps:
-      - name: Generate signing key
-        id: key
-        env:
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-        run: |-
-          set -eu
-          if [ -n "${PRIVATE_KEY}" ]; then
-            KEY_FILENAME="${GITHUB_REPOSITORY_OWNER}.rsa"
-            echo "using the PRIVATE_KEY secret as ${KEY_FILENAME}"
-          else
-            # no secret configured: use a throwaway key (packages still build,
-            # but are signed with a key that is not published)
-            KEY_FILENAME=dummy.rsa
-            openssl genrsa -out "/tmp/${KEY_FILENAME}" 4096
-            openssl rsa -in "/tmp/${KEY_FILENAME}" -pubout -out "/tmp/${KEY_FILENAME}.pub"
-            echo "::warning::No PRIVATE_KEY secret configured; packages are signed with a throwaway key and cannot be trusted. Set the PRIVATE_KEY repository secret to publish a usable repository."
-            {
-              echo "private_key<<PKEOF"
-              cat "/tmp/${KEY_FILENAME}"
-              echo "PKEOF"
-              echo "public_key<<PUBEOF"
-              cat "/tmp/${KEY_FILENAME}.pub"
-              echo "PUBEOF"
-            } >> "$GITHUB_OUTPUT"
-          fi
-          echo "key_filename=${KEY_FILENAME}" >> "$GITHUB_OUTPUT"
-
   build:
     runs-on: ${{ matrix.runner }}
-    needs: prepare-key
     strategy:
       fail-fast: false
       matrix:
@@ -77,36 +41,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Prepare abuild key
-        env:
-          SECRET_KEY:   ${{ secrets.PRIVATE_KEY }}
-          KEY_FILENAME: ${{ needs.prepare-key.outputs.key_filename }}
-          PRIVATE_KEY:  ${{ needs.prepare-key.outputs.private_key }}
-          PUBLIC_KEY:   ${{ needs.prepare-key.outputs.public_key }}
+      - name: Prepare throwaway abuild key
         run: |-
           set -eu
           mkdir -p .abuild
           echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
-          if [ -n "${SECRET_KEY}" ]; then
-            # real key: read the secret directly (job outputs would be redacted)
-            printf '%s\n' "${SECRET_KEY}" > ".abuild/${KEY_FILENAME}"
-            openssl rsa -in ".abuild/${KEY_FILENAME}" -pubout -out ".abuild/${KEY_FILENAME}.pub"
-            echo "using the PRIVATE_KEY secret as ${KEY_FILENAME}"
-          else
-            # throwaway key shared by prepare-key via job outputs
-            printf '%s\n' "${PRIVATE_KEY}" > ".abuild/${KEY_FILENAME}"
-            printf '%s\n' "${PUBLIC_KEY}" > ".abuild/${KEY_FILENAME}.pub"
-            echo "using the throwaway key ${KEY_FILENAME}"
-          fi
-          echo "PACKAGER_PRIVKEY='/root/.abuild/${KEY_FILENAME}'" >> .abuild/abuild.conf
-          chmod 600 ".abuild/${KEY_FILENAME}"
-          ls -la .abuild
+          echo "PACKAGER_PRIVKEY='/root/.abuild/dummy.rsa'" >> .abuild/abuild.conf
+          openssl genrsa -out .abuild/dummy.rsa 4096
+          openssl rsa -in .abuild/dummy.rsa -pubout -out .abuild/dummy.rsa.pub
+          chmod 600 .abuild/dummy.rsa
+          echo "throwaway key ready (packages are re-signed at publish time)"
 
       - name: Build packages
         env:
           ALPINE_VERSION: ${{ matrix.alpine_version }}
           DOCKER_ARCH: ${{ matrix.docker_arch }}
-          KEY_FILENAME: ${{ needs.prepare-key.outputs.key_filename }}
         run: |-
           set -eu
           case "${DOCKER_ARCH}" in
@@ -118,7 +67,7 @@ jobs:
           docker run --rm --interactive \
             --platform "${PLATFORM}" \
             --volume "$PWD":/work --workdir /work \
-            --env PACKAGER --env KEY_FILENAME --env ALPINE_VERSION \
+            --env PACKAGER --env ALPINE_VERSION \
             alpine:${ALPINE_VERSION#v} /bin/sh -eu <<'EOF'
             # the runner may leak HOME=/home/runner into the container
             export HOME=/root
@@ -131,10 +80,10 @@ jobs:
 
             mkdir -p /root/.abuild
             cp /work/.abuild/abuild.conf /root/.abuild/
-            cp "/work/.abuild/${KEY_FILENAME}" /root/.abuild/
-            cp "/work/.abuild/${KEY_FILENAME}.pub" /root/.abuild/
-            chmod 600 "/root/.abuild/${KEY_FILENAME}"
-            cp "/root/.abuild/${KEY_FILENAME}.pub" /etc/apk/keys/
+            cp /work/.abuild/dummy.rsa /root/.abuild/
+            cp /work/.abuild/dummy.rsa.pub /root/.abuild/
+            chmod 600 /root/.abuild/dummy.rsa
+            cp /root/.abuild/dummy.rsa.pub /etc/apk/keys/
 
             # composefs (needed by ostree; provides libcomposefs + pkg-config)
             cd /work/main/composefs
@@ -161,7 +110,7 @@ jobs:
   pages:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    needs: [build, prepare-key]
+    needs: build
     permissions:
       pages: write
       id-token: write
@@ -174,29 +123,64 @@ jobs:
           path: artifacts
 
       - name: Assemble Pages site
-        env:
-          SECRET_KEY:   ${{ secrets.PRIVATE_KEY }}
-          KEY_FILENAME: ${{ needs.prepare-key.outputs.key_filename }}
-          PUBLIC_KEY:   ${{ needs.prepare-key.outputs.public_key }}
         run: |-
           set -eu
           mkdir -p _site
           # upload-artifact stores the *contents* of repo/ at the artifact root
           cp -a artifacts/*/. _site/
-          # publish the signing key at a stable location; single key shared by
-          # every architecture (from the secret, or from prepare-key's outputs
-          # in the throwaway case)
-          mkdir -p _site/keys
-          if [ -n "${SECRET_KEY}" ]; then
-            printf '%s\n' "${SECRET_KEY}" > /tmp/.key.rsa
-            openssl rsa -in /tmp/.key.rsa -pubout -out "_site/keys/${KEY_FILENAME}.pub"
-            rm -f /tmp/.key.rsa
-            echo "published signing key: keys/${KEY_FILENAME}.pub"
-          else
-            printf '%s\n' "${PUBLIC_KEY}" > "_site/keys/${KEY_FILENAME}.pub"
-            echo "published throwaway signing key: keys/${KEY_FILENAME}.pub"
-          fi
           # artifact-based Pages serves the files as-is; no .nojekyll needed
+          find _site -maxdepth 4 -type f | sort
+
+      - name: Re-sign packages with the real key
+        env:
+          # environment secret on "github-pages" (main branch only)
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          KEY_FILENAME: ${{ github.owner }}.rsa
+        run: |-
+          set -eu
+          if [ -n "${PRIVATE_KEY}" ]; then
+            printf '%s\n' "${PRIVATE_KEY}" > key.rsa
+            chmod 600 key.rsa
+            openssl rsa -in key.rsa -pubout -out key.rsa.pub
+            echo "re-signing with ${KEY_FILENAME}"
+            docker run --rm --interactive \
+              --volume "$PWD":/work --workdir /work \
+              --env KEY_FILENAME alpine:3.24 /bin/sh -eu <<'EOF'
+              export HOME=/root
+              apk update >/dev/null
+              apk add --no-cache abuild >/dev/null
+              mkdir -p /root/.abuild
+              echo "PACKAGER_PRIVKEY='/root/.abuild/${KEY_FILENAME}'" > /root/.abuild/abuild.conf
+              cp /work/key.rsa /root/.abuild/${KEY_FILENAME}
+              chmod 600 /root/.abuild/${KEY_FILENAME}
+              cp /work/key.rsa.pub /root/.abuild/${KEY_FILENAME}.pub
+              cp /root/.abuild/${KEY_FILENAME}.pub /etc/apk/keys/
+
+              for archdir in /work/_site/v3.24/main/*/; do
+                arch="$(basename "$archdir")"
+                echo "re-signing ${arch}"
+                cd "$archdir"
+                for apk in *.apk; do
+                  abuild-gzsplit < "$apk"
+                  rm -f signatures.tar.gz
+                  abuild-sign -q -k "/root/.abuild/${KEY_FILENAME}" control.tar.gz
+                  cat control.tar.gz data.tar.gz > "$apk.new"
+                  rm -f control.tar.gz data.tar.gz
+                  mv "$apk.new" "$apk"
+                done
+                apk index --no-warnings --quiet --output APKINDEX.tar.gz \
+                  --rewrite-arch "$arch" *.apk
+                abuild-sign -q -k "/root/.abuild/${KEY_FILENAME}" APKINDEX.tar.gz
+                cd /work
+              done
+
+              mkdir -p /work/_site/keys
+              cp /root/.abuild/${KEY_FILENAME}.pub /work/_site/keys/
+            EOF
+            echo "re-signed all packages + indexes"
+          else
+            echo "::warning::github-pages environment secret PRIVATE_KEY not set; publishing with the build-stage dummy signatures"
+          fi
           find _site -maxdepth 4 -type f | sort
 
       - name: Upload Pages artifact

@@ -22,14 +22,12 @@ jobs:
   # Generate the signing key ONCE so every architecture signs with the same
   # key. Uses the PRIVATE_KEY secret when configured (key name
   # <github.owner>.rsa); otherwise a throwaway key named dummy.rsa (with a
-  # loud warning). Key material is shared via job outputs, base64-encoded so
-  # the multi-line PEM survives the output/env round-trip.
+  # loud warning). The key files are shared via an artifact (job outputs
+  # redact secret-derived values, so key material must travel as files).
   prepare-key:
     runs-on: ubuntu-latest
     outputs:
-      key_filename:    ${{ steps.key.outputs.key_filename }}
-      private_key_b64: ${{ steps.key.outputs.private_key_b64 }}
-      public_key_b64:  ${{ steps.key.outputs.public_key_b64 }}
+      key_filename: ${{ steps.key.outputs.key_filename }}
     steps:
       - name: Generate signing key
         id: key
@@ -48,11 +46,19 @@ jobs:
             echo "::warning::No PRIVATE_KEY secret configured; packages are signed with a throwaway key and cannot be trusted. Set the PRIVATE_KEY repository secret to publish a usable repository."
           fi
           openssl rsa -in "/tmp/${KEY_FILENAME}" -pubout -out "/tmp/${KEY_FILENAME}.pub"
-          {
-            echo "key_filename=${KEY_FILENAME}"
-            echo "private_key_b64=$(base64 -w0 "/tmp/${KEY_FILENAME}")"
-            echo "public_key_b64=$(base64 -w0 "/tmp/${KEY_FILENAME}.pub")"
-          } >> "$GITHUB_OUTPUT"
+          echo "key_filename=${KEY_FILENAME}" >> "$GITHUB_OUTPUT"
+          mkdir -p .abuild
+          echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
+          echo "PACKAGER_PRIVKEY='/root/.abuild/${KEY_FILENAME}'" >> .abuild/abuild.conf
+          install -m600 "/tmp/${KEY_FILENAME}" ".abuild/${KEY_FILENAME}"
+          install -m644 "/tmp/${KEY_FILENAME}.pub" ".abuild/${KEY_FILENAME}.pub"
+          ls -la .abuild
+      - name: Upload signing key
+        uses: actions/upload-artifact@v7
+        with:
+          name: signing-key
+          path: .abuild
+          if-no-files-found: error
 
   build:
     runs-on: ${{ matrix.runner }}
@@ -72,20 +78,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Prepare abuild key
-        env:
-          PRIVATE_KEY_B64: ${{ needs.prepare-key.outputs.private_key_b64 }}
-          PUBLIC_KEY_B64:  ${{ needs.prepare-key.outputs.public_key_b64 }}
-          KEY_FILENAME:    ${{ needs.prepare-key.outputs.key_filename }}
-        run: |-
-          set -eux
-          mkdir -p .abuild
-          echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
-          printf '%s' "${PRIVATE_KEY_B64}" | base64 -d > ".abuild/${KEY_FILENAME}"
-          echo "PACKAGER_PRIVKEY='/root/.abuild/${KEY_FILENAME}'" >> .abuild/abuild.conf
-          printf '%s' "${PUBLIC_KEY_B64}" | base64 -d > ".abuild/${KEY_FILENAME}.pub"
-          chmod 600 ".abuild/${KEY_FILENAME}"
-          ls -la .abuild
+      - name: Download signing key
+        uses: actions/download-artifact@v8
+        with:
+          name: signing-key
+          path: .
 
       - name: Build packages
         env:
@@ -152,8 +149,13 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Download signing key
+        uses: actions/download-artifact@v8
+        with:
+          name: signing-key
+          path: .
+
       - name: Download all built repos
         uses: actions/download-artifact@v8
         with:
@@ -161,17 +163,16 @@ jobs:
 
       - name: Assemble Pages site
         env:
-          PUBLIC_KEY_B64: ${{ needs.prepare-key.outputs.public_key_b64 }}
-          KEY_FILENAME:   ${{ needs.prepare-key.outputs.key_filename }}
+          KEY_FILENAME: ${{ needs.prepare-key.outputs.key_filename }}
         run: |-
           set -eux
           mkdir -p _site
           # upload-artifact stores the *contents* of repo/ at the artifact root
           cp -a artifacts/*/. _site/
           # publish the signing key at a stable location; it comes from the
-          # prepare-key job output (single key shared by every architecture)
+          # prepare-key job (single key shared by every architecture)
           mkdir -p _site/keys
-          printf '%s' "${PUBLIC_KEY_B64}" | base64 -d > "_site/keys/${KEY_FILENAME}.pub"
+          cp ".abuild/${KEY_FILENAME}.pub" _site/keys/
           # artifact-based Pages serves the files as-is; no .nojekyll needed
           find _site -maxdepth 4 -type f | sort
 
@@ -181,5 +182,4 @@ jobs:
           path: _site
 
       - name: Deploy to GitHub Pages
-        id: deployment
         uses: actions/deploy-pages@v5

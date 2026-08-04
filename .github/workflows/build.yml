@@ -23,18 +23,32 @@ permissions:
 jobs:
   build:
     runs-on: ${{ matrix.platform.github_runner }}
+    # the whole job runs inside Alpine; on the arm64 runner docker pulls the
+    # arm64 variant of the (multi-platform) alpine image automatically, so no
+    # --platform handling is needed
+    container:
+      image: alpine:3.24
+    defaults:
+      run:
+        shell: sh
     strategy:
       fail-fast: false
       matrix:
-        # amd64 on the standard x64 runner, aarch64 natively on an arm64
-        # runner (no QEMU/binfmt emulation -> much faster)
+        # amd64 on the standard x64 runner, arm64 natively on an arm64 runner
+        # (no QEMU/binfmt emulation -> much faster)
         alpine_version: [v3.24]
         platform:
           - docker_arch: amd64
             github_runner: ubuntu-26.04
-          - docker_arch: aarch64
+          - docker_arch: arm64
             github_runner: ubuntu-26.04-arm
     steps:
+      - name: Install build tools
+        run: |-
+          set -eu
+          apk update
+          apk add --no-cache abuild git openssl
+
       - uses: actions/checkout@v7
 
       - name: Prepare throwaway abuild key
@@ -42,6 +56,7 @@ jobs:
           PACKAGER: ${{ vars.PACKAGER }}
         run: |-
           set -eu
+          export HOME=/root
           mkdir -p .abuild
           echo "PACKAGER='${PACKAGER}'" > .abuild/abuild.conf
           echo "PACKAGER_PRIVKEY='/root/.abuild/dummy.rsa'" >> .abuild/abuild.conf
@@ -53,50 +68,32 @@ jobs:
       - name: Build packages
         env:
           ALPINE_VERSION: ${{ matrix.alpine_version }}
-          DOCKER_ARCH: ${{ matrix.platform.docker_arch }}
         run: |-
           set -eu
-          case "${DOCKER_ARCH}" in
-            amd64)   PLATFORM="linux/amd64" ;;
-            aarch64) PLATFORM="linux/arm64" ;;
-            *)       echo "unsupported arch: ${DOCKER_ARCH}" >&2; exit 1 ;;
-          esac
-          # library/alpine is multi-platform; docker resolves the variant via --platform
-          docker run --rm --interactive \
-            --platform "${PLATFORM}" \
-            --volume "$PWD":/work --workdir /work \
-            --env ALPINE_VERSION \
-            alpine:${ALPINE_VERSION#v} /bin/sh -eu <<'EOF'
-            # the runner may leak HOME=/home/runner into the container
-            export HOME=/root
-            apk update
-            apk add --no-cache abuild
+          export HOME=/root
+          ALPINE_ARCH="$(apk --print-arch)"
+          REPODEST="${GITHUB_WORKSPACE}/repo/${ALPINE_VERSION}"
+          echo "building for Alpine ${ALPINE_VERSION} / ${ALPINE_ARCH}"
 
-            ALPINE_ARCH="$(apk --print-arch)"
-            REPODEST="/work/repo/${ALPINE_VERSION}"
-            echo "building for Alpine ${ALPINE_VERSION} / ${ALPINE_ARCH}"
+          cp .abuild/abuild.conf /root/.abuild/
+          cp .abuild/dummy.rsa /root/.abuild/
+          cp .abuild/dummy.rsa.pub /root/.abuild/
+          chmod 600 /root/.abuild/dummy.rsa
+          cp /root/.abuild/dummy.rsa.pub /etc/apk/keys/
 
-            mkdir -p /root/.abuild
-            cp /work/.abuild/abuild.conf /root/.abuild/
-            cp /work/.abuild/dummy.rsa /root/.abuild/
-            cp /work/.abuild/dummy.rsa.pub /root/.abuild/
-            chmod 600 /root/.abuild/dummy.rsa
-            cp /root/.abuild/dummy.rsa.pub /etc/apk/keys/
+          # composefs (needed by ostree; provides libcomposefs + pkg-config)
+          cd main/composefs
+          abuild -F -r -P "${REPODEST}"
 
-            # composefs (needed by ostree; provides libcomposefs + pkg-config)
-            cd /work/main/composefs
-            abuild -F -r -P "${REPODEST}"
+          # the build above already indexes + signs the repo; expose it so
+          # ostree's build can resolve makedepends from it
+          echo "file://${REPODEST}" >> /etc/apk/repositories
+          apk update --no-cache
 
-            # the build above already indexes + signs the repo; expose it so
-            # ostree's build can resolve makedepends from it
-            echo "file://${REPODEST}" >> /etc/apk/repositories
-            apk update --no-cache
-
-            # ostree with composefs support
-            cd /work/main/ostree
-            abuild -F -r -P "${REPODEST}"
-            find "${REPODEST}" -maxdepth 3 -type f | sort
-          EOF
+          # ostree with composefs support
+          cd ../ostree
+          abuild -F -r -P "${REPODEST}"
+          find "${REPODEST}" -maxdepth 3 -type f | sort
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

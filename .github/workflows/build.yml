@@ -60,13 +60,14 @@ jobs:
         run: |
           set -eux
           case "${DOCKER_ARCH}" in
-            amd64)   IMAGE="alpine:${ALPINE_VERSION#v}" ;;
-            aarch64) IMAGE="arm64v8/alpine:${ALPINE_VERSION#v}" ;;
+            amd64)   IMAGE="alpine:${ALPINE_VERSION#v}"; PLATFORM="linux/amd64" ;;
+            aarch64) IMAGE="arm64v8/alpine:${ALPINE_VERSION#v}"; PLATFORM="linux/arm64" ;;
             *)       echo "unsupported arch: ${DOCKER_ARCH}" >&2; exit 1 ;;
           esac
           docker run --rm --interactive \
+            --platform "${PLATFORM}" \
             --volume "$PWD":/work --workdir /work \
-            --env PACKAGER --env PRIVATE_KEY_FILENAME \
+            --env PACKAGER --env PRIVATE_KEY_FILENAME --env ALPINE_VERSION \
             "${IMAGE}" /bin/sh -eux <<'EOF'
             apk add --no-cache abuild
 

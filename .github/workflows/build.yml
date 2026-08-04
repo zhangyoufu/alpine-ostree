@@ -50,7 +50,7 @@ jobs:
             PRIVATE_KEY_FILENAME=dummy.rsa
             openssl genrsa -out ".abuild/dummy.rsa" 4096
           fi
-          echo "PACKAGER_PRIVKEY='${HOME}/.abuild/${PRIVATE_KEY_FILENAME}'" >> .abuild/abuild.conf
+          echo "PACKAGER_PRIVKEY='/root/.abuild/${PRIVATE_KEY_FILENAME}'" >> .abuild/abuild.conf
           openssl rsa -in ".abuild/${PRIVATE_KEY_FILENAME}" -pubout -out ".abuild/${PRIVATE_KEY_FILENAME}.pub"
 
       - name: Build packages
@@ -69,6 +69,8 @@ jobs:
             --volume "$PWD":/work --workdir /work \
             --env PACKAGER --env PRIVATE_KEY_FILENAME --env ALPINE_VERSION \
             "${IMAGE}" /bin/sh -eux <<'EOF'
+            # the runner may leak HOME=/home/runner into the container
+            export HOME=/root
             apk add --no-cache abuild
 
             ALPINE_ARCH="$(apk --print-arch)"

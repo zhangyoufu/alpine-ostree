@@ -141,9 +141,12 @@ jobs:
           # upload-artifact stores the *contents* of repo/ at the artifact root
           cp -a artifacts/*/. _site/
           # publish the signing key at a stable location; it is generated from
-          # the PRIVATE_KEY secret during the build, not committed to the repo
+          # the PRIVATE_KEY secret during the build, not committed to the repo.
+          # Move it out of the per-arch directories (one copy is enough).
           mkdir -p _site/keys
-          cp -f _site/v3.24/main/*/*.rsa.pub _site/keys/
+          mv "$(find _site/v3.24 -name '*.rsa.pub' -type f | head -1)" \
+            _site/keys/zhangyoufu.rsa.pub
+          find _site/v3.24 -name '*.rsa.pub' -type f -delete
           # artifact-based Pages serves the files as-is; no .nojekyll needed
           find _site -maxdepth 4 -type f | sort
 

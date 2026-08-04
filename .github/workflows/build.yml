@@ -22,18 +22,21 @@ env:
 jobs:
   build:
     if: "!contains(github.event.head_commit.message, '[ci skip]')"
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        alpine_version: [v3.24]
-        docker_arch: [amd64, aarch64]
+        include:
+          # amd64 on the standard x64 runner, aarch64 natively on an arm64
+          # runner (no QEMU/binfmt emulation -> much faster)
+          - alpine_version: v3.24
+            docker_arch: amd64
+            runner: ubuntu-latest
+          - alpine_version: v3.24
+            docker_arch: aarch64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-
-      - name: Set up QEMU for cross-arch container
-        if: matrix.docker_arch != 'amd64'
-        uses: docker/setup-qemu-action@v4
 
       - name: Prepare abuild key
         env:
@@ -137,7 +140,7 @@ jobs:
           # upload-artifact stores the *contents* of repo/ at the artifact root
           cp -a artifacts/*/. _site/
           cp -a keys _site/keys
-          touch _site/.nojekyll
+          # artifact-based Pages serves the files as-is; no .nojekyll needed
           find _site -maxdepth 4 -type f | sort
 
       - name: Upload Pages artifact

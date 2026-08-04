@@ -14,7 +14,6 @@ name: build
 
 on:
   push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -142,7 +141,7 @@ jobs:
             echo "re-signing with ${KEY_FILENAME}"
             docker run --rm --interactive \
               --volume "$PWD":/work --workdir /work \
-              --env KEY_FILENAME alpine:3.24 /bin/sh -eu <<'EOF'
+              --env KEY_FILENAME alpine:latest /bin/sh -eu <<'EOF'
               export HOME=/root
               apk update >/dev/null
               apk add --no-cache abuild >/dev/null
@@ -151,9 +150,8 @@ jobs:
               cp /work/key.rsa /root/.abuild/${KEY_FILENAME}
               chmod 600 /root/.abuild/${KEY_FILENAME}
               cp /work/key.rsa.pub /root/.abuild/${KEY_FILENAME}.pub
-              cp /root/.abuild/${KEY_FILENAME}.pub /etc/apk/keys/
 
-              for archdir in /work/_site/v3.24/main/*/; do
+              for archdir in /work/_site/*/main/*/; do
                 arch="$(basename "$archdir")"
                 echo "re-signing ${arch}"
                 cd "$archdir"

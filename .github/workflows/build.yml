@@ -150,6 +150,8 @@ jobs:
               cp /work/key.rsa /root/.abuild/${KEY_FILENAME}
               chmod 600 /root/.abuild/${KEY_FILENAME}
               cp /work/key.rsa.pub /root/.abuild/${KEY_FILENAME}.pub
+              # apk index validates package signatures while reading metadata
+              cp /root/.abuild/${KEY_FILENAME}.pub /etc/apk/keys/
 
               for archdir in /work/_site/*/main/*/; do
                 arch="$(basename "$archdir")"

@@ -51,6 +51,7 @@ jobs:
             # but are signed with a key that is not published)
             PRIVATE_KEY_FILENAME=dummy.rsa
             openssl genrsa -out ".abuild/dummy.rsa" 4096
+            echo "::warning::No PRIVATE_KEY secret configured; packages are signed with a throwaway key and cannot be trusted. Set the PRIVATE_KEY repository secret to publish a usable repository."
           fi
           echo "PACKAGER_PRIVKEY='/root/.abuild/${PRIVATE_KEY_FILENAME}'" >> .abuild/abuild.conf
           openssl rsa -in ".abuild/${PRIVATE_KEY_FILENAME}" -pubout -out ".abuild/${PRIVATE_KEY_FILENAME}.pub"
